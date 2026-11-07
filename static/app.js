@@ -11,6 +11,12 @@ import { initializePasskeyFlows } from "./passkeys.mjs";
 
 initializePasskeyFlows();
 
+const authenticatedForm = document.querySelector("[data-submit-after-authentication]");
+if (typeof HTMLFormElement !== "undefined" && authenticatedForm instanceof HTMLFormElement) {
+  authenticatedForm.requestSubmit();
+}
+
+
 const disbursementForm = document.querySelector("[data-disbursement-form]");
 if (typeof HTMLFormElement !== "undefined" && disbursementForm instanceof HTMLFormElement) {
   const type = disbursementForm.querySelector("[data-disbursement-type]");

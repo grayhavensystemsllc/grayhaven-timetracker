@@ -134,7 +134,7 @@ Activation restores normal availability.
 Clients and contracts are archived rather than deleted. Archiving a client
 archives its contracts, stops active timers, and rotates its shared-report
 password. Restoring a client leaves its contracts archived for separate
-activation. Eligible tasks, subtasks, and pending sessions retain soft-delete
+activation. Eligible tasks and pending sessions retain soft-delete
 controls. Normal queries exclude deleted records; stable identifiers and audit
 history remain available for controlled administrative recovery. User accounts
 use enablement rather than deletion.
@@ -178,7 +178,9 @@ corrections. Voiding an unpaid invoice returns them to a correctable state.
 Administrators select a client and active contract, choose a custom range or
 the period since the last issued invoice, and review a preview before generating
 an invoice. Generation requires sensitive-action authorization and claims the
-previewed sessions atomically. Each invoice receives a per-contract sequence
+previewed sessions atomically. A confirmed generation resumes after
+reauthentication and opens the new invoice detail page. Each invoice receives
+a per-contract sequence
 number and stores snapshots of its client, contract, contact, rate, payment
 terms, selected sessions, worker-day totals, calculated amount, and PDF.
 
@@ -197,6 +199,12 @@ Invoice PDFs are stored when generated. Downloads overlay the current status,
 its date, and any transaction ID on the stored PDF so later calculation changes
 do not alter issued invoices. Status updates render through the invoice's saved
 PDF layout version.
+Administrators can correct payment and refund transaction IDs and notes with a
+required correction reason. Changed IDs must remain unique; note-only edits
+retain the current ID. The correction and its audit event commit atomically,
+without changing invoice status, dates, amounts or issued contents. Subsequent
+PDF downloads show the corrected reference.
+
 Optional notes can be recorded with payment and refund transactions. The
 administrator detail page always shows a payment-note card for paid invoices
 and adds a refund-note card for refunded invoices, including when either note
