@@ -1,1 +1,5 @@
-"""Grayhaven Systems LLC Time Tracker test suite."""
+"""Synthetic unit tests with value-free diagnostics."""
+
+from tests.diagnostics import install
+
+install()

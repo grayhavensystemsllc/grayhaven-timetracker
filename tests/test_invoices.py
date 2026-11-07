@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -44,6 +45,7 @@ from grayhaven_timetracker.invoice_time import (
 from grayhaven_timetracker.invoices import (
     InvoiceDomainError,
     calculate_due_date,
+    correct_invoice_transaction,
     create_invoice,
     mark_invoice_paid,
     preview_invoice,
@@ -61,7 +63,7 @@ from grayhaven_timetracker.models import (
     User,
 )
 from grayhaven_timetracker.reports import invoice_entry_costs
-from tests.helpers import AppTestCase, PublicInvoiceId
+from tests.helpers import ADMIN_EMAIL, ADMIN_PASSWORD, AppTestCase, PublicInvoiceId
 
 
 def _configure_invoice_branding(app: Flask, root: Path) -> None:
@@ -201,6 +203,112 @@ class InvoiceDomainTests(AppTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.seed = self.seed_contract()
+
+    def test_transaction_corrections_preserve_invoice_snapshot_and_state(self) -> None:
+        invoice_id = self.create_test_invoice()
+        original_ref, revised_ref = "INITIAL-41", "REVISED-52"
+        with session_scope(self.app) as database:
+            invoice = mark_invoice_paid(
+                database, invoice_id, transaction_id=original_ref, note="Original note"
+            )
+        for reference, note in [
+            (revised_ref, "Revised note"),
+            (revised_ref, None),
+            (revised_ref, None),
+        ]:
+            with (
+                self.subTest(reference=reference, note=note),
+                session_scope(self.app) as database,
+            ):
+                invoice = database.get(Invoice, invoice_id)
+                assert invoice is not None
+                mutable = {"paid_transaction_id", "paid_transaction_note"}
+                snapshot = {
+                    c.key: getattr(invoice, c.key)
+                    for c in Invoice.__table__.columns
+                    if c.key not in mutable
+                }
+                before_ref, before_note = (
+                    invoice.paid_transaction_id,
+                    invoice.paid_transaction_note,
+                )
+                invoice, changes = correct_invoice_transaction(
+                    database, invoice_id, transaction_id=reference, note=note
+                )
+                self.assertEqual(invoice.paid_transaction_id, reference)
+                self.assertEqual(invoice.paid_transaction_note, note)
+                self.assertEqual(
+                    {
+                        c.key: getattr(invoice, c.key)
+                        for c in Invoice.__table__.columns
+                        if c.key not in mutable
+                    },
+                    snapshot,
+                )
+                expected = {
+                    key: {"from": old, "to": new}
+                    for key, old, new in [
+                        ("Transaction Id", before_ref, reference),
+                        ("Payment Note", before_note, note),
+                    ]
+                    if old != new
+                }
+                self.assertEqual(changes, expected)
+
+    def test_transaction_corrections_reject_invalid_values_and_unavailable_transactions(
+        self,
+    ) -> None:
+        invoice_id = self.create_test_invoice()
+        with session_scope(self.app) as database:
+            with self.assertRaises(InvoiceDomainError):
+                correct_invoice_transaction(
+                    database, invoice_id, transaction_id="PAY-41", note=None
+                )
+        with session_scope(self.app) as database:
+            mark_invoice_paid(
+                database, invoice_id, transaction_id="PAY-41", note="Original"
+            )
+        for reference, note, refund in [
+            (None, None, False),
+            (" ", None, False),
+            ("x" * 21, None, False),
+            ("bad\nref", None, False),
+            ("PAY-41", "n" * 501, False),
+            ("REF-42", None, True),
+        ]:
+            with self.subTest(refund=refund), session_scope(self.app) as database:
+                with self.assertRaises(InvoiceDomainError):
+                    correct_invoice_transaction(
+                        database,
+                        invoice_id,
+                        transaction_id=reference,
+                        note=note,
+                        refund=refund,
+                    )
+        with session_scope(self.app) as database:
+            refund_invoice(database, invoice_id, transaction_id="REF-42")
+        with session_scope(self.app) as database:
+            with self.assertRaises(InvoiceDomainError):
+                correct_invoice_transaction(
+                    database, invoice_id, transaction_id="REF-42", note=None
+                )
+        with session_scope(self.app) as database:
+            invoice, changes = correct_invoice_transaction(
+                database,
+                invoice_id,
+                transaction_id="REF-43",
+                note="Refund correction",
+                refund=True,
+            )
+            self.assertTrue(invoice.refunded)
+            self.assertEqual(invoice.paid_transaction_id, "PAY-41")
+            self.assertEqual(invoice.refund_transaction_id, "REF-43")
+            self.assertEqual(set(changes), {"Transaction Id", "Refund Note"})
+        with session_scope(self.app) as database:
+            with self.assertRaises(InvoiceDomainError):
+                correct_invoice_transaction(
+                    database, 999999, transaction_id="UNUSED-55", note=None
+                )
 
     def test_status_overlay_preserves_issued_pdf_body(self) -> None:
         invoice_id = self.create_test_invoice()
@@ -1118,6 +1226,221 @@ class InvoiceRouteTests(AppTestCase):
         self.seed = self.seed_contract()
         _configure_invoice_branding(self.app, self.root)
 
+    def issue_fixture_invoice(self) -> PublicInvoiceId:
+        with session_scope(self.app) as database:
+            entry = database.get(TimeEntry, self.seed.entry_id)
+            assert entry is not None and entry.stopped_at is not None
+            preview = preview_invoice(
+                database,
+                contract_id=self.seed.contract_id,
+                range_start_utc=entry.started_at,
+                range_end_utc=entry.stopped_at + timedelta(seconds=1),
+                timezone_name="UTC",
+            )
+            invoice = create_invoice(
+                database,
+                contract_id=self.seed.contract_id,
+                range_start_utc=preview.range_start_utc,
+                range_end_utc=preview.range_end_utc,
+                timezone_name="UTC",
+                expected_fingerprint=preview.fingerprint,
+            )
+            database.flush()
+            return PublicInvoiceId(invoice.id, invoice.invoice_number)
+
+    def test_transaction_correction_audit_and_download_use_current_details(
+        self,
+    ) -> None:
+        invoice_id = self.issue_fixture_invoice()
+        with session_scope(self.app) as database:
+            mark_invoice_paid(
+                database, invoice_id, transaction_id="ORIGINAL-81", note="Original note"
+            )
+        self.login()
+        path = f"/invoices/{invoice_id}/correct-payment"
+        self.assertIn("/reauthenticate?", self.client.get(path).location)
+        self.authorize_sensitive_action(path)
+        self.assertEqual(self.client.get(path).status_code, 200)
+        invalid = self.client.post(
+            path, data={"transaction_id": "REVISED-82", "note": "Revised note"}
+        )
+        self.assertEqual(invalid.status_code, 409)
+        reason = "Correct a fictional reference"
+        response = self.client.post(
+            path,
+            data={
+                "transaction_id": "REVISED-82",
+                "note": "Revised note",
+                "correction_reason": reason,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.location, f"/invoices/{invoice_id}")
+        with session_scope(self.app) as database:
+            invoice = database.get(Invoice, invoice_id)
+            assert invoice is not None
+            event = database.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.event == "invoice_payment_corrected"
+                )
+            )
+            assert event is not None
+            self.assertEqual(event.source, "admin")
+            self.assertEqual(
+                json.loads(event.details_json),
+                {
+                    "invoice_number": invoice.invoice_number,
+                    "correction_reason": reason,
+                    "changes": {
+                        "Transaction Id": {"from": "ORIGINAL-81", "to": "REVISED-82"},
+                        "Payment Note": {"from": "Original note", "to": "Revised note"},
+                    },
+                },
+            )
+        pdf = self.client.get(f"/invoices/{invoice_id}/download")
+        text = "\n".join(
+            page.extract_text() for page in PdfReader(BytesIO(pdf.data)).pages
+        )
+        self.assertIn("REVISED-82", text)
+        self.assertNotIn("ORIGINAL-81", text)
+        self.authorize_sensitive_action(path)
+        same = self.client.post(
+            path,
+            data={
+                "transaction_id": "REVISED-82",
+                "note": "Revised note",
+                "correction_reason": reason,
+            },
+        )
+        self.assertEqual(same.status_code, 302)
+        with session_scope(self.app) as database:
+            self.assertEqual(
+                len(
+                    list(
+                        database.scalars(
+                            select(AuditEvent).where(
+                                AuditEvent.event == "invoice_payment_corrected"
+                            )
+                        )
+                    )
+                ),
+                1,
+            )
+
+    def test_failed_correction_audit_rolls_back_the_edit(self) -> None:
+        invoice_id = self.issue_fixture_invoice()
+        with session_scope(self.app) as database:
+            mark_invoice_paid(
+                database, invoice_id, transaction_id="INITIAL-91", note="Keep"
+            )
+        self.login()
+        path = f"/invoices/{invoice_id}/correct-payment"
+        self.authorize_sensitive_action(path)
+        with patch.object(
+            invoice_routes,
+            "audit_invoice",
+            side_effect=IntegrityError("fixture", {}, Exception()),
+        ):
+            response = self.client.post(
+                path,
+                data={
+                    "transaction_id": "NEW-92",
+                    "note": "Changed",
+                    "correction_reason": "Fixture correction",
+                },
+            )
+        self.assertEqual(response.status_code, 409)
+        with session_scope(self.app) as database:
+            invoice = database.get(Invoice, invoice_id)
+            assert invoice is not None
+            self.assertEqual(
+                (invoice.paid_transaction_id, invoice.paid_transaction_note),
+                ("INITIAL-91", "Keep"),
+            )
+            self.assertIsNone(
+                database.scalar(
+                    select(AuditEvent).where(
+                        AuditEvent.event == "invoice_payment_corrected"
+                    )
+                )
+            )
+
+    def test_correction_routes_reject_unavailable_transactions(self) -> None:
+        invoice_id = self.issue_fixture_invoice()
+        self.login()
+        for kind, status in [("payment", 409), ("refund", 409), ("unknown", 404)]:
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    self.client.get(
+                        f"/invoices/{invoice_id}/correct-{kind}"
+                    ).status_code,
+                    status,
+                )
+        with session_scope(self.app) as database:
+            mark_invoice_paid(database, invoice_id, transaction_id="PAY-65")
+            database.commit()
+            refund_invoice(database, invoice_id, transaction_id="REF-66")
+        path = f"/invoices/{invoice_id}/correct-refund"
+        self.authorize_sensitive_action(path)
+        self.assertEqual(self.client.get(path).status_code, 200)
+        response = self.client.post(
+            path,
+            data={
+                "transaction_id": "REF-67",
+                "note": "Revised refund",
+                "correction_reason": "Fixture correction",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        with session_scope(self.app) as database:
+            self.assertIsNotNone(
+                database.scalar(
+                    select(AuditEvent).where(
+                        AuditEvent.event == "invoice_refund_corrected"
+                    )
+                )
+            )
+
+    def test_generation_resumes_the_confirmed_post_after_password_authentication(
+        self,
+    ) -> None:
+        self.login()
+        with session_scope(self.app) as database:
+            admin = database.scalar(select(User).where(User.email == ADMIN_EMAIL))
+            assert admin is not None
+            admin.totp_secret = None
+        response = self.client.post(
+            "/invoices/preview",
+            data={
+                "client_id": str(self.seed.client_id),
+                "contract_id": str(self.seed.contract_id),
+                "mode": "custom",
+                "range_start": "2026-07-14T20:00",
+                "range_end": "2026-07-14T22:00",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        with self.client.session_transaction() as state:
+            nonce = state["invoice_draft"]["nonce"]
+        denied = self.client.post("/invoices/generate", data={"nonce": "different"})
+        self.assertEqual(denied.status_code, 409)
+        redirect = self.client.post("/invoices/generate", data={"nonce": nonce})
+        authentication = redirect.location
+        self.assertEqual(self.client.get(authentication).status_code, 200)
+        authorized = self.client.post(authentication, data={"password": ADMIN_PASSWORD})
+        self.assertEqual(authorized.location, "/invoices/generate")
+        resumed = self.client.get(authorized.location)
+        self.assertEqual(resumed.status_code, 200)
+        self.assertIn(b"data-submit-after-authentication", resumed.data)
+        with session_scope(self.app) as database:
+            self.assertIsNone(database.scalar(select(Invoice)))
+        completed = self.client.post("/invoices/generate", data={"nonce": nonce})
+        self.assertEqual(completed.status_code, 302)
+        self.assertRegex(completed.location, r"^/invoices/[0-9]{3}-[0-9]{3}-[0-9]{3}$")
+        self.client.post("/invoices/generate", data={"nonce": nonce})
+        with session_scope(self.app) as database:
+            self.assertEqual(len(list(database.scalars(select(Invoice)))), 1)
+
     def test_void_is_unavailable_for_archived_contract(self) -> None:
         with session_scope(self.app) as database:
             entry = database.get(TimeEntry, self.seed.entry_id)
@@ -1276,7 +1599,7 @@ class InvoiceRouteTests(AppTestCase):
         self.assertIn(b"1 hour 7 seconds", refreshed_preview.data)
         generated = self.client.post("/invoices/generate", data={"nonce": nonce})
         self.assertEqual(generated.status_code, 302)
-        self.assertEqual(generated.location, "/invoices")
+        self.assertRegex(generated.location, r"^/invoices/[0-9]{3}-[0-9]{3}-[0-9]{3}$")
 
         with session_scope(self.app) as database:
             invoice = database.scalar(select(Invoice))

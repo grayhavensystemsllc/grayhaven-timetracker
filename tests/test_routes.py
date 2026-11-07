@@ -1347,8 +1347,42 @@ class ClientContractTaskRouteTests(AppTestCase):
                 response = self.client.post(path, data=payload)
             self.assertIn(response.status_code, (302, 409))
 
+    def test_recorded_subtask_time_blocks_direct_deletion_and_disables_the_control(
+        self,
+    ) -> None:
+        seed = self.seed_contract()
+        path = f"/subtasks/{seed.subtask_id}/delete"
+        for stopped, hidden in [(True, False), (False, False), (True, True)]:
+            with self.subTest(stopped=stopped, hidden=hidden):
+                with session_scope(self.app) as database:
+                    entry = database.get(TimeEntry, seed.entry_id)
+                    assert entry is not None
+                    entry.stopped_at = (
+                        entry.started_at + timedelta(minutes=2) if stopped else None
+                    )
+                    entry.visible = not hidden
+                for method in (self.client.get, self.client.post):
+                    self.assertEqual(method(path).status_code, 409)
+                page = self.client.get(f"/contracts/{seed.contract_id}")
+                self.assertEqual(page.status_code, 200)
+                self.assertNotIn(f'href="{path}"'.encode(), page.data)
+                with session_scope(self.app) as database:
+                    self.assertIsNotNone(database.get(Subtask, seed.subtask_id))
+                    self.assertIsNotNone(
+                        database.scalar(
+                            select(TimeEntry.id)
+                            .where(TimeEntry.id == seed.entry_id)
+                            .execution_options(include_hidden=True)
+                        )
+                    )
+
     def test_sensitive_archive_and_delete_forms_require_reauthentication(self) -> None:
         seed = self.seed_contract()
+        with session_scope(self.app) as database:
+            empty_subtask = Subtask(task_id=seed.task_id, name="Empty fixture subtask")
+            database.add(empty_subtask)
+            database.flush()
+            empty_subtask_id = empty_subtask.id
         client_response = self.client.post(
             "/clients/new",
             data={
@@ -1382,7 +1416,7 @@ class ClientContractTaskRouteTests(AppTestCase):
         self.assertEqual(self.client.get(client_path).status_code, 200)
         for path in (
             f"/tasks/{seed.task_id}/delete",
-            f"/subtasks/{seed.subtask_id}/delete",
+            f"/subtasks/{empty_subtask_id}/delete",
         ):
             with self.subTest(path=path):
                 self.authorize_sensitive_action(path)

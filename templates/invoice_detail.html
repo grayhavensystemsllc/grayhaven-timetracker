@@ -9,7 +9,7 @@
 </section>
 {% if invoice.status == 'PAID' %}
 <section class="panel session-directory" aria-labelledby="transaction-notes-heading">
-  <div class="panel-heading"><div><h2 id="transaction-notes-heading">Transaction Notes</h2></div></div>
+  <div class="panel-heading"><div><h2 id="transaction-notes-heading">Transaction Notes</h2></div><div class="row-actions"><a class="button button-secondary button-compact" href="{{ url_for('invoices.correct_transaction', invoice_id=invoice.id, kind='payment') }}">Edit Payment</a>{% if invoice.refunded %}<a class="button button-secondary button-compact" href="{{ url_for('invoices.correct_transaction', invoice_id=invoice.id, kind='refund') }}">Edit Refund</a>{% endif %}</div></div>
   <div class="summary-grid content-grid-two panel transaction-notes-grid">
     <div class="summary-card"><span>Payment Notes</span><p class="transaction-note-copy">{{ invoice.paid_transaction_note or 'No notes were provided for this transaction.' }}</p></div>
     {% if invoice.refunded %}<div class="summary-card"><span>Refund Notes</span><p class="transaction-note-copy">{{ invoice.refund_transaction_note or 'No notes were provided for this transaction.' }}</p></div>{% endif %}

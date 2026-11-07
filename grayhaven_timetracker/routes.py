@@ -2474,9 +2474,14 @@ def contract(contract_id: int) -> Any:
             item.archived_at is None and has_pending_invoice_sessions(item)
         ),
         protected_task_ids={row.task_id for row in protected_rows},
-        protected_subtask_ids={
-            row.subtask_id for row in protected_rows if row.subtask_id is not None
-        },
+        protected_subtask_ids=set(
+            get_session().scalars(
+                select(TimeEntry.subtask_id)
+                .join(TimeEntry.task)
+                .where(Task.contract_id == item.id, TimeEntry.subtask_id.is_not(None))
+                .execution_options(include_hidden=True)
+            )
+        ),
     )
 
 
@@ -2689,12 +2694,19 @@ def delete_subtask(subtask_id: int) -> Any:
     database = get_session()
     subtask = cast(Subtask, get_or_404(Subtask, subtask_id))
     require_active_contract(subtask.task.contract)
-    require_pending_sessions_for_deletion(
-        select(TimeEntry.id).where(TimeEntry.subtask_id == subtask.id), "subtask"
-    )
     actor = cast(User, current_user())
     if not actor.is_admin:
         abort(403)
+    if (
+        database.scalar(
+            select(TimeEntry.id)
+            .where(TimeEntry.subtask_id == subtask.id)
+            .execution_options(include_hidden=True)
+            .limit(1)
+        )
+        is not None
+    ):
+        abort(409, "This subtask has recorded time and cannot be deleted.")
     contract_id = subtask.task.contract_id
     client_name = subtask.task.contract.client.name
     contract_name = subtask.task.contract.name
@@ -2709,8 +2721,7 @@ def delete_subtask(subtask_id: int) -> Any:
         "eyebrow": "DELETE SUBTASK",
         "title": subtask.name,
         "description": (
-            "Delete this subtask and recorded time. Audit history is retained. "
-            "This cannot be undone."
+            "Delete this subtask. Audit history is retained. This cannot be undone."
         ),
         "submit_label": "Delete Subtask",
         "cancel_url": url_for("main.contract", contract_id=contract_id),

@@ -92,7 +92,7 @@
           </details>
           {% endif %}
           {% if not contract.archived_at and can('task:delete') and logged_user.is_admin %}
-          {% if subtask.id in protected_subtask_ids %}<button class="icon-button danger" type="button" disabled title="This subtask has invoiced sessions and cannot be deleted" aria-label="Delete Subtask unavailable"><i class="fa-solid fa-trash" aria-hidden="true"></i></button>{% else %}<a class="icon-button danger" href="{{ url_for('main.delete_subtask', subtask_id=subtask.id) }}" title="Delete Subtask" aria-label="Delete Subtask"><i class="fa-solid fa-trash" aria-hidden="true"></i></a>{% endif %}
+          {% if subtask.id in protected_subtask_ids %}<button class="icon-button danger" type="button" disabled title="This subtask has recorded time and cannot be deleted" aria-label="Delete Subtask unavailable"><i class="fa-solid fa-trash" aria-hidden="true"></i></button>{% else %}<a class="icon-button danger" href="{{ url_for('main.delete_subtask', subtask_id=subtask.id) }}" title="Delete Subtask" aria-label="Delete Subtask"><i class="fa-solid fa-trash" aria-hidden="true"></i></a>{% endif %}
           {% endif %}
         </div>
       </div>

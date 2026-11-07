@@ -31,6 +31,7 @@ from .database import get_session
 from .invoice_pdf import invoice_pdf_with_status
 from .invoice_summary import worker_daily_summary_rows
 from .invoices import (
+    correct_invoice_transaction,
     create_invoice,
     mark_invoice_paid,
     preview_invoice,
@@ -49,10 +50,12 @@ from .routes import (
     local_datetime_to_utc,
     now_utc,
     require_sensitive_action_authorization,
+    sensitive_action_authorized,
 )
 
 invoices = Blueprint("invoices", __name__, url_prefix="/invoices")
 PAGE_SIZE = 25
+GENERATION_RESUME_KEY = "invoice_generation_resume_nonce"
 
 
 def human_duration(seconds: int) -> str:
@@ -221,6 +224,7 @@ def preview() -> Any:
         )
         draft["start_utc"] = proposed.range_start_utc.isoformat()
         draft["end_utc"] = proposed.range_end_utc.isoformat()
+        session.pop(GENERATION_RESUME_KEY, None)
         session["invoice_draft"] = draft
         return render_template(
             "invoice_preview.html",
@@ -243,9 +247,13 @@ def generate() -> Any:
     if request.method == "POST" and request.form.get("nonce") != draft.get("nonce"):
         abort(409, "This preview was replaced. Preview the invoice again.")
     actor = cast(User, current_user())
+    if request.method == "GET" and not sensitive_action_authorized(actor):
+        session.pop(GENERATION_RESUME_KEY, None)
     if response := require_sensitive_action_authorization(
         actor, url_for("invoices.index")
     ):
+        if request.method == "POST":
+            session[GENERATION_RESUME_KEY] = draft["nonce"]
         return response
     database = get_session()
     try:
@@ -267,6 +275,8 @@ def generate() -> Any:
                 raise ValueError(
                     "Eligible entries or project details changed. Please preview again."
                 )
+            if session.pop(GENERATION_RESUME_KEY, None) == draft["nonce"]:
+                return render_template("invoice_resume.html", draft=draft)
             return render_template(
                 "invoice_preview.html",
                 preview=proposed,
@@ -299,6 +309,7 @@ def generate() -> Any:
     except (ValueError, IntegrityError, OperationalError) as exc:
         database.rollback()
         clear_sensitive_action_authorization()
+        session.pop(GENERATION_RESUME_KEY, None)
         flash(
             str(exc)
             if isinstance(exc, ValueError)
@@ -307,9 +318,10 @@ def generate() -> Any:
         )
         return redirect(url_for("invoices.new"))
     session.pop("invoice_draft", None)
+    session.pop(GENERATION_RESUME_KEY, None)
     consume_sensitive_action_authorization()
     flash(f"Invoice {invoice.invoice_number} generated.", "success")
-    return redirect(url_for("invoices.index"))
+    return redirect(url_for("invoices.detail", invoice_id=invoice.id))
 
 
 @invoices.get("/<invoicenum:invoice_id>")
@@ -469,4 +481,72 @@ def action(invoice_id: int, action: str) -> Any:
         return render_template("invoice_action.html", **context), 409
     consume_sensitive_action_authorization()
     flash(f"Invoice {invoice.invoice_number}: {labels[action]} completed.", "success")
+    return redirect(url_for("invoices.detail", invoice_id=invoice.id))
+
+
+@invoices.route("/<invoicenum:invoice_id>/correct-<kind>", methods=["GET", "POST"])
+@permission_required(INVOICE_MANAGE)
+def correct_transaction(invoice_id: int, kind: str) -> Any:
+    """Edit payment or refund references with an atomic correction audit."""
+    if kind not in {"payment", "refund"}:
+        abort(404)
+    invoice = get_invoice(invoice_id)
+    refund = kind == "refund"
+    if invoice.status != "PAID" or (refund and not invoice.refunded):
+        abort(409, "That transaction is not available for correction.")
+    actor = cast(User, current_user())
+    if response := require_sensitive_action_authorization(
+        actor, url_for("invoices.detail", invoice_id=invoice.id)
+    ):
+        return response
+    prefix = "refund" if refund else "paid"
+    context = {
+        "invoice": invoice,
+        "action": "correct-" + kind,
+        "action_label": "Edit " + kind.title(),
+        "reason_required": True,
+        "editing_transaction": True,
+        "transaction_kind": kind,
+        "form_values": {
+            "transaction_id": getattr(invoice, prefix + "_transaction_id") or "",
+            "note": getattr(invoice, prefix + "_transaction_note") or "",
+        },
+    }
+    if request.method == "GET":
+        return render_template("invoice_action.html", **context)
+    database = get_session()
+    try:
+        reason = correction_reason()
+        invoice, changes = correct_invoice_transaction(
+            database,
+            invoice_id,
+            transaction_id=request.form.get("transaction_id"),
+            note=request.form.get("note"),
+            refund=refund,
+        )
+        if changes:
+            audit_invoice(
+                "invoice_" + kind + "_corrected",
+                invoice,
+                correction_reason=reason,
+                changes=changes,
+            )
+        database.commit()
+    except (ValueError, IntegrityError, OperationalError) as exc:
+        database.rollback()
+        flash(
+            str(exc)
+            if isinstance(exc, ValueError)
+            else "Invoice data changed or is busy. Please reload and try again.",
+            "error",
+        )
+        context["form_values"] = request.form
+        return render_template("invoice_action.html", **context), 409
+    consume_sensitive_action_authorization()
+    flash(
+        "Transaction details updated."
+        if changes
+        else "Transaction details are unchanged.",
+        "success",
+    )
     return redirect(url_for("invoices.detail", invoice_id=invoice.id))

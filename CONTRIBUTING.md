@@ -77,7 +77,7 @@ Python 3.12 contributor check and also runs unit coverage on the Python 3.14
 production runtime:
 
 ```bash
-node --test tests/*.mjs
+node --test --test-reporter ./tests/reporters/value-free.mjs tests/*.mjs
 python3 -m pip_audit --progress-spinner off -r requirements.txt
 python3 -m compileall -q grayhaven_timetracker scripts tests
 mypy --strict grayhaven_timetracker scripts
@@ -100,6 +100,10 @@ docker build --build-arg APP_VERSION=local-validation \
 git ls-files '*.md' | xargs -r markdownlint-cli2
 git diff --check
 ```
+
+Test diagnostics report result counts and failure locations without assertion
+values, subtest arguments or captured process output. Use the value-free Node
+reporter in the validation commands.
 
 Coverage includes line and branch measurement and fails below the 90% threshold
 configured in `pyproject.toml`.

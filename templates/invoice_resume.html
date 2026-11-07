@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Generate Invoice · Grayhaven Systems LLC Time Tracker{% endblock %}
+{% block content %}
+<section class="narrow-content"><div class="panel form-panel"><div class="panel-heading"><div><h1>Generate Invoice</h1><p class="muted">Creating your invoice.</p></div></div>
+  <form method="post" action="{{ url_for('invoices.generate') }}" class="form-stack" data-submit-after-authentication>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="nonce" value="{{ draft.nonce }}">
+    <div class="form-actions"><a class="button button-secondary" href="{{ url_for('invoices.index') }}">Cancel</a><button class="button button-primary" type="submit">Generate Invoice</button></div>
+  </form>
+</div></section>
+{% endblock %}

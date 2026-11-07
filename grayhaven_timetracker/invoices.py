@@ -432,8 +432,8 @@ def _immediate_transaction(database: Session) -> Iterator[None]:
         raise
 
 
-def require_available_transaction_id(database: Session, value: str | None) -> str:
-    """Reserve a reference across every recorded financial transaction."""
+def normalized_transaction_id(value: str | None) -> str:
+    """Validate and normalize a financial transaction reference."""
     reference = (value or "").strip()
     if not reference:
         raise InvoiceDomainError("Transaction ID is required.")
@@ -441,6 +441,12 @@ def require_available_transaction_id(database: Session, value: str | None) -> st
         raise InvoiceDomainError("Transaction ID is too long.")
     if any(ord(character) < 32 or ord(character) == 127 for character in reference):
         raise InvoiceDomainError("Transaction ID contains invalid characters.")
+    return reference
+
+
+def require_available_transaction_id(database: Session, value: str | None) -> str:
+    """Reserve a reference across every recorded financial transaction."""
+    reference = normalized_transaction_id(value)
     occupied = (
         database.scalar(
             select(Disbursement.id)
@@ -713,6 +719,45 @@ def refund_invoice(
         invoice.refund_transaction_note = transaction_note
         invoice.refunded_date = local_refunded_date
         return invoice
+
+
+def correct_invoice_transaction(
+    database: Session,
+    invoice_id: int,
+    *,
+    transaction_id: str | None,
+    note: str | None,
+    refund: bool = False,
+) -> tuple[Invoice, dict[str, dict[str, str | None]]]:
+    """Correct transaction details without changing invoice or billing state."""
+    with _immediate_transaction(database):
+        invoice = _invoice(database, invoice_id)
+        if invoice.status != "PAID" or (refund and not invoice.refunded):
+            raise InvoiceDomainError(
+                "That transaction is not available for correction."
+            )
+        prefix = "refund" if refund else "paid"
+        original_id = getattr(invoice, prefix + "_transaction_id")
+        original_note = getattr(invoice, prefix + "_transaction_note")
+        reference = normalized_transaction_id(transaction_id)
+        if reference != original_id:
+            reference = require_available_transaction_id(database, reference)
+        transaction_note = normalized_transaction_note(note)
+        changes = {
+            label: {"from": before, "to": after}
+            for label, before, after in (
+                ("Transaction Id", original_id, reference),
+                (
+                    "Refund Note" if refund else "Payment Note",
+                    original_note,
+                    transaction_note,
+                ),
+            )
+            if before != after
+        }
+        setattr(invoice, prefix + "_transaction_id", reference)
+        setattr(invoice, prefix + "_transaction_note", transaction_note)
+        return invoice, changes
 
 
 def void_invoice(database: Session, invoice_id: int) -> Invoice:

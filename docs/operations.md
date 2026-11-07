@@ -843,7 +843,7 @@ To issue an invoice:
 3. Select **Preview Invoice** and review the stopped eligible sessions,
    selected range, billable hours, total, rate, and payment terms.
 4. Select **Generate Invoice** and complete sensitive-action authorization.
-5. Open the generated invoice to download its stored PDF.
+5. The generated invoice opens automatically. Select **Download** for its PDF.
 
 To record or correct invoice state:
 
@@ -859,12 +859,16 @@ To record or correct invoice state:
 4. Void an unpaid invoice when its sessions need to return to pending invoice,
    then make time corrections and issue a replacement invoice. Enter the
    requested correction reason.
-5. Review the audit log for the invoice action and any corrected time.
+5. Use **Edit Payment** or **Edit Refund** to correct an existing transaction ID
+   or note. Enter a correction reason. The invoice status, dates and contents
+   remain unchanged; its next PDF download shows the current transaction ID.
+6. Review the audit log for the invoice action and any corrected time.
 
 To record a worker transaction, open **Disbursements**, select the worker, and
 add a dated Disbursement, In-Kind Transaction, or Retained Earnings entry.
 Payment, refund, Disbursement, and In-Kind Transaction entries require a
 transaction ID of up to 20 characters that has never been used in Time Tracker.
+A note-only correction may retain its transaction's current ID.
 Retained Earnings are available only for LLC Members. Entries are final once
 recorded.
 
