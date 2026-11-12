@@ -9,4 +9,4 @@ qrcode==8.2
 Pillow==13.0.0
 reportlab==5.0.1
 pypdf==6.21.4
-sqlcipher3==0.6.2
+sqlcipher3==0.6.5
