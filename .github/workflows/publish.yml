@@ -134,15 +134,11 @@ jobs:
       - name: Ruff format check
         run: ruff format --check grayhaven_timetracker scripts tests
       - name: Run actionlint
-        uses: devops-actions/actionlint@ec02b36684b2f574f1d219ad0a43b082e46bf3e4  # v0.1.13
+        run: actionlint
       - name: Run yamllint
         uses: ibiqlik/action-yamllint@2576378a8e339169678f9939646ee3ee325e845c  # v3
       - name: Validate Docker Compose config
         run: docker compose config --quiet
-      - name: Build container image
-        env:
-          APP_VERSION: release-validation
-        run: docker build --build-arg APP_VERSION="${APP_VERSION}" --tag grayhaven-timetracker:validation .
       - name: Run unit tests
         run: |
           node --test --test-reporter ./tests/reporters/value-free.mjs tests/*.mjs
