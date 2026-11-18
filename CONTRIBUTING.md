@@ -41,11 +41,10 @@ Install runtime and development dependencies:
 python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 python3 -m pip install -r requirements-dev.txt
-python3 -m pip install actionlint-py
 ```
 
-Docker with the Compose plugin is required for container-image and Compose
-validation. Confirm that both interfaces are available:
+Docker with the Compose plugin is used to validate Compose configuration and
+build releases. Confirm that both interfaces are available:
 
 ```bash
 docker --version
@@ -88,15 +87,13 @@ python3 -m coverage report
 python3 -m coverage xml
 ```
 
-Validate the repository and container definitions:
+Validate the repository definitions:
 
 ```bash
 actionlint
 shellcheck scripts/build-image
 git ls-files '*.yml' '*.yaml' | xargs -r yamllint
 docker compose config --quiet
-docker build --build-arg APP_VERSION=local-validation \
-  --tag grayhaven-timetracker:validation .
 git ls-files '*.md' | xargs -r markdownlint-cli2
 git diff --check
 ```
